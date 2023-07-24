@@ -68,5 +68,10 @@ namespace GLTFast {
         /// This property defines the anisotropic filtering level for textures
         /// </summary>
         public int anisotropicFilterLevel = 1;
+        
+        /// <summary>
+        /// This property defines if textures should be loaded or not (in case you have a custom texture loader.
+        /// </summary>
+        public bool loadTextures = true;
     }
 }

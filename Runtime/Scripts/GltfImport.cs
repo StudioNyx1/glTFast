@@ -337,7 +337,32 @@ namespace GLTFast {
             settings = importSettings ?? new ImportSettings();
             var success = await LoadGltfBinaryBuffer(bytes,uri);
             if(success) await LoadContent();
-            success = success && await Prepare();
+            if(importSettings.loadTextures)
+                success = success && await Prepare();
+            else
+            {
+                success = success && await PrepareNoTextures();
+            }
+            DisposeVolatileData();
+            loadingError = !success;
+            loadingDone = true;
+            return success;
+        }
+
+
+        public async Task<bool> LoadGltf(string json, Uri url = null, ImportSettings importSettings = null)
+        {
+            settings = importSettings ?? new ImportSettings();
+            var baseUri = UriHelper.GetBaseUri(url);
+            var success = await ParseJsonAndLoadBuffers(json, baseUri);
+
+            if (success) await LoadContent();
+            if (importSettings.loadTextures)
+                success = success && await Prepare();
+            else
+            {
+                success = success && await PrepareNoTextures();
+            }
             DisposeVolatileData();
             loadingError = !success;
             loadingDone = true;
@@ -637,7 +662,14 @@ namespace GLTFast {
                 if(success) {
                     success = await LoadContent();
                 }
-                success = success && await Prepare();
+                
+                if(settings.loadTextures) {
+                    success = success && await PrepareNoTextures();
+                }
+                else
+                {
+                    success = success && await Prepare();
+                }
             } else {
                 logger?.Error(LogCode.Download,download.error,url.ToString());
             }
@@ -1312,6 +1344,119 @@ namespace GLTFast {
         }
 
 #endif // MESHOPT
+
+        async Task<bool> PrepareNoTextures()
+        {
+            if(gltfRoot.meshes!=null) {
+                meshPrimitiveIndex = new int[gltfRoot.meshes.Length+1];
+            }
+            
+            resources = new List<UnityEngine.Object>();
+            
+            await deferAgent.BreakPoint();
+
+            var success = true;
+            
+#if MESHOPT
+            success = await WaitForMeshoptDecode();
+            if (!success) return false;
+#endif
+            
+            if(gltfRoot.accessors!=null) {
+                success = await LoadAccessorData(gltfRoot);
+                await deferAgent.BreakPoint();
+
+                while(!accessorJobsHandle.IsCompleted) {
+                    await Task.Yield();
+                }
+                accessorJobsHandle.Complete();
+                foreach(var ad in accessorData) {
+                    ad?.Unpin();
+                }
+            }
+            if (!success) return success;
+
+            if(gltfRoot.meshes!=null) {
+                await CreatePrimitiveContexts(gltfRoot);
+            }
+            
+            if(gltfRoot.materials!=null) {
+                materials = new UnityEngine.Material[gltfRoot.materials.Length];
+                for(int i=0;i<materials.Length;i++) {
+                    await deferAgent.BreakPoint(.0001f);
+                    Profiler.BeginSample("GenerateMaterial");
+                    materialGenerator.SetLogger(logger);
+                    materials[i] = materialGenerator.GenerateMaterial(gltfRoot.materials[i],this);
+                    materialGenerator.SetLogger(null);
+                    Profiler.EndSample();
+                }
+            }
+            await deferAgent.BreakPoint();
+
+            if(primitiveContexts!=null) {
+                for(int i=0;i<primitiveContexts.Length;i++) {
+                    var primitiveContext = primitiveContexts[i];
+                    if(primitiveContext==null) continue;
+                    while(!primitiveContext.IsCompleted) {
+                        await Task.Yield();
+                    }
+                }
+                await deferAgent.BreakPoint();
+                
+                await AssignAllAccessorData(gltfRoot);
+
+                for(int i=0;i<primitiveContexts.Length;i++) {
+                    var primitiveContext = primitiveContexts[i];
+                    while(!primitiveContext.IsCompleted) {
+                        await Task.Yield();
+                    }
+                    var primitive = await primitiveContext.CreatePrimitive();
+                    // The import failed :\
+                    // await defaultDeferAgent.BreakPoint();
+
+                    if(primitive.HasValue) {
+                        primitives[primitiveContext.primtiveIndex] = primitive.Value;
+                        resources.Add(primitive.Value.mesh);
+                    } else {
+                        success = false;
+                        break;
+                    }
+
+                    await deferAgent.BreakPoint();
+                }
+            }
+            
+            int[] parentIndex = null;
+
+            var skeletonMissing = gltfRoot.IsASkeletonMissing();
+            
+            if (gltfRoot.nodes != null && gltfRoot.nodes.Length > 0) {
+                if (settings.nodeNameMethod == ImportSettings.NameImportMethod.OriginalUnique) {
+                    parentIndex = CreateUniqueNames();
+                } else if (skeletonMissing) {
+                    parentIndex = GetParentIndices();
+                }
+                if (skeletonMissing) {
+                    for (int skinId = 0; skinId < gltfRoot.skins.Length; skinId++) {
+                        var skin = gltfRoot.skins[skinId];
+                        if (skin.skeleton < 0) {
+                            skin.skeleton = GetLowestCommonAncestorNode(skin.joints, parentIndex);
+                        }
+                    }
+                }
+            }
+            
+            // Dispose all accessor data buffers, except the ones needed for instantiation
+            if (accessorData != null) {
+                for (var index = 0; index < accessorData.Length; index++) {
+                    if ((accessorUsage[index] & AccessorUsage.RequiredForInstantiation) == 0) {
+                        accessorData[index]?.Dispose();
+                        accessorData[index] = null;
+                    }
+                }
+            }
+            return success;
+        }
 
         async Task<bool> Prepare() {
             if(gltfRoot.meshes!=null) {
