@@ -103,5 +103,10 @@ namespace GLTFast
         [SerializeField]
         [Tooltip("Anisotropic filtering level for imported textures.")]
         int anisotropicFilterLevel = 1;
+        
+        /// <summary>
+        /// This property defines if textures should be loaded or not (in case you have a custom texture loader).
+        /// </summary>
+        public bool loadTextures = true;
     }
 }

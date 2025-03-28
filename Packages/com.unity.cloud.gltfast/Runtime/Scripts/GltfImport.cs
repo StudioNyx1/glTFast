@@ -580,7 +580,14 @@ namespace GLTFast
             m_Settings = importSettings ?? new ImportSettings();
             var success = await LoadGltfBinaryBuffer(bytes, uri);
             if (success) await LoadContent();
-            success = success && await Prepare();
+
+			if(importSettings.loadTextures)
+                success = success && await Prepare();
+            else
+            {
+                success = success && await PrepareNoTextures();
+            }	
+
             DisposeVolatileData();
             LoadingError = !success;
             LoadingDone = true;
@@ -605,7 +612,14 @@ namespace GLTFast
             m_Settings = importSettings ?? new ImportSettings();
             var success = await LoadGltf(json, uri);
             if (success) await LoadContent();
-            success = success && await Prepare();
+
+			if(importSettings.loadTextures)
+                success = success && await Prepare();
+            else
+            {
+                success = success && await PrepareNoTextures();
+            }
+
             DisposeVolatileData();
             LoadingError = !success;
             LoadingDone = true;
@@ -2063,6 +2077,199 @@ namespace GLTFast
         }
 
 #endif // MESHOPT
+
+async Task<bool> PrepareNoTextures()
+        {
+            m_Resources = new List<UnityEngine.Object>();
+
+            // RedundantAssignment potentially becomes necessary when MESHOPT is not available
+            // ReSharper disable once RedundantAssignment
+            var success = true;
+
+#if MESHOPT
+            success = await WaitForMeshoptDecode();
+            if (!success) return false;
+#endif
+
+            if (Root.Accessors != null)
+            {
+                success = await LoadAccessorData();
+                await DeferAgent.BreakPoint();
+
+                while (!m_AccessorJobsHandle.IsCompleted)
+                {
+                    await Task.Yield();
+                }
+                m_AccessorJobsHandle.Complete();
+            }
+            if (!success) return success;
+
+            if (Root.Materials != null)
+            {
+                await GenerateMaterials();
+            }
+            await DeferAgent.BreakPoint();
+
+            if (m_MeshOrders != null)
+            {
+                await WaitForAllMeshGenerators();
+                await DeferAgent.BreakPoint();
+
+                await AssignAllAccessorData();
+
+                success = await CreateAllMeshAssignments();
+            }
+
+#if UNITY_ANIMATION
+            if (Root.HasAnimation) {
+                if (m_Settings.NodeNameMethod != NameImportMethod.OriginalUnique) {
+                    Logger?.Info(LogCode.NamingOverride);
+                    m_Settings.NodeNameMethod = NameImportMethod.OriginalUnique;
+                }
+            }
+#endif
+
+            int[] parentIndex = null;
+
+            var skeletonMissing = Root.IsASkeletonMissing();
+
+            if (Root.Nodes != null && Root.Nodes.Count > 0)
+            {
+                if (m_Settings.NodeNameMethod == NameImportMethod.OriginalUnique)
+                {
+                    parentIndex = CreateUniqueNames();
+                }
+                else if (skeletonMissing)
+                {
+                    parentIndex = GetParentIndices();
+                }
+                if (skeletonMissing)
+                {
+                    CalculateSkinSkeletons(parentIndex);
+                }
+            }
+
+#if UNITY_ANIMATION
+            if (Root.HasAnimation && m_Settings.AnimationMethod != AnimationMethod.None)
+            {
+                CreateAnimationClips(parentIndex);
+            }
+#endif
+
+            DisposeVolatileAccessorData();
+            return success;
+        }
+
+#if UNITY_ANIMATION
+        void CreateAnimationClips(int[] parentIndex)
+        {
+            m_AnimationClips = new AnimationClip[Root.Animations.Count];
+            for (var i = 0; i < Root.Animations.Count; i++) {
+                var animation = Root.Animations[i];
+                m_AnimationClips[i] = new AnimationClip
+                {
+                    name = animation.name ?? $"Clip_{i}",
+
+                    // Legacy Animation requirement
+                    legacy = m_Settings.AnimationMethod == AnimationMethod.Legacy,
+                    wrapMode = WrapMode.Loop
+                };
+
+                for (var j = 0; j < animation.Channels.Count; j++) {
+                    var channel = animation.Channels[j];
+                    if (channel.sampler < 0 || channel.sampler >= animation.Samplers.Count) {
+                        Logger?.Error(LogCode.AnimationChannelSamplerInvalid, j.ToString());
+                        continue;
+                    }
+                    var sampler = animation.Samplers[channel.sampler];
+                    if (sampler == null || sampler.output < 0 || sampler.output >= Root.Accessors.Count)
+                    {
+                        Logger?.Error(LogCode.AnimationChannelSamplerInvalid, j.ToString());
+                        continue;
+                    }
+                    if (channel.Target.node < 0 || channel.Target.node >= Root.Nodes.Count) {
+                        Logger?.Error(LogCode.AnimationChannelNodeInvalid, j.ToString());
+                        continue;
+                    }
+
+                    var path = AnimationUtils.CreateAnimationPath(channel.Target.node,m_NodeNames,parentIndex);
+
+                    var times = (NativeArray<float>) m_AccessorData[sampler.input];
+
+                    var outputData = m_AccessorData[sampler.output];
+                    Assert.IsNotNull(outputData);
+
+                    switch (channel.Target.GetPath()) {
+                        case AnimationChannelBase.Path.Translation: {
+                            Assert.IsTrue(outputData is NativeArray<Vector3>);
+                            var values = (NativeArray<Vector3>) outputData;
+                            AnimationUtils.AddTranslationCurves(m_AnimationClips[i], path, times, values, sampler.GetInterpolationType());
+                            break;
+                        }
+                        case AnimationChannelBase.Path.Rotation: {
+                            Assert.IsTrue(outputData is NativeArray<Quaternion>);
+                            var values = (NativeArray<Quaternion>) outputData;
+                            AnimationUtils.AddRotationCurves(m_AnimationClips[i], path, times, values, sampler.GetInterpolationType());
+                            break;
+                        }
+                        case AnimationChannelBase.Path.Scale: {
+                            Assert.IsTrue(outputData is NativeArray<Vector3>);
+                            var values = (NativeArray<Vector3>) outputData;
+                            AnimationUtils.AddScaleCurves(m_AnimationClips[i], path, times, values, sampler.GetInterpolationType());
+                            break;
+                        }
+                        case AnimationChannelBase.Path.Weights: {
+                            Assert.IsTrue(outputData is NativeArray<float>);
+                            var values = (NativeArray<float>) outputData;
+                            var node = Root.Nodes[channel.Target.node];
+                            if (node.mesh < 0 || node.mesh >= Root.Meshes.Count) {
+                                break;
+                            }
+                            var mesh = Root.Meshes[node.mesh];
+                            AnimationUtils.AddMorphTargetWeightCurves(
+                                m_AnimationClips[i],
+                                path,
+                                times,
+                                values,
+                                sampler.GetInterpolationType(),
+                                mesh.Extras?.targetNames
+                            );
+
+                            // HACK BEGIN:
+                            // Since meshes with multiple primitives that are not using
+                            // identical vertex buffers are split up into separate Unity
+                            // Meshes. Because of this, we have to duplicate the animation
+                            // curves, so that all primitives are animated.
+                            // TODO: Refactor primitive sub-meshing and remove this hack
+                            // https://github.com/atteneder/glTFast/issues/153
+                            var meshName = string.IsNullOrEmpty(mesh.name) ? k_PrimitiveName : mesh.name;
+                            var meshCount = m_MeshAssignments.GetLength(node.mesh);
+                            for (var k = 1; k < meshCount; k++) {
+                                var primitiveName = $"{meshName}_{k}";
+                                AnimationUtils.AddMorphTargetWeightCurves(
+                                    m_AnimationClips[i],
+                                    $"{path}/{primitiveName}",
+                                    times,
+                                    values,
+                                    sampler.GetInterpolationType(),
+                                    mesh.Extras?.targetNames
+                                );
+                            }
+                            // HACK END
+                            break;
+                        }
+                        case AnimationChannelBase.Path.Pointer:
+                            Logger?.Warning(LogCode.AnimationTargetPathUnsupported,channel.Target.GetPath().ToString());
+                            break;
+                        case AnimationChannelBase.Path.Unknown:
+                        case AnimationChannelBase.Path.Invalid:
+                        default:
+                            Logger?.Error(LogCode.AnimationTargetPathUnsupported,channel.Target.GetPath().ToString());
+                            break;
+                    }
+                }
+            }
+        }
 
         async Task<bool> Prepare()
         {
