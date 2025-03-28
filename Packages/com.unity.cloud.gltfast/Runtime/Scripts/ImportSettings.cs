@@ -76,6 +76,15 @@ namespace GLTFast
             set => anisotropicFilterLevel = value;
         }
 
+        /// <summary>
+        /// This property defines if textures should be loaded or not (in case you have a custom texture loader).
+        /// </summary>
+		public bool LoadTextures
+        {
+            get => loadTextures;
+            set => loadTextures = value;
+        }
+
         [SerializeField]
         [Tooltip("Controls how node names are created.")]
         NameImportMethod nodeNameMethod = NameImportMethod.Original;
@@ -104,9 +113,8 @@ namespace GLTFast
         [Tooltip("Anisotropic filtering level for imported textures.")]
         int anisotropicFilterLevel = 1;
         
-        /// <summary>
-        /// This property defines if textures should be loaded or not (in case you have a custom texture loader).
-        /// </summary>
-        public bool loadTextures = true;
+		[SerializeField]
+        [Tooltip("Defines if textures should be loaded or not (in case you have a custom texture loader)")]
+        bool loadTextures = true;
     }
 }

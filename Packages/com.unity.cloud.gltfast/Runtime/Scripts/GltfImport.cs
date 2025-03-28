@@ -581,7 +581,7 @@ namespace GLTFast
             var success = await LoadGltfBinaryBuffer(bytes, uri);
             if (success) await LoadContent();
 
-			if(importSettings.loadTextures)
+			if(importSettings.LoadTextures)
                 success = success && await Prepare();
             else
             {
@@ -613,7 +613,7 @@ namespace GLTFast
             var success = await LoadGltf(json, uri);
             if (success) await LoadContent();
 
-			if(importSettings.loadTextures)
+			if(importSettings.LoadTextures)
                 success = success && await Prepare();
             else
             {
