@@ -228,6 +228,11 @@ namespace GLTFast
         /// </summary>
         Texture2D[] m_Textures;
 
+        /// <summary>
+        /// Base URL of the model
+        /// </summary>
+        private string m_Path;
+
 #if KTX
         HashSet<int> m_NonFlippedYTextureIndices;
 #endif
@@ -578,10 +583,11 @@ namespace GLTFast
             )
         {
             m_Settings = importSettings ?? new ImportSettings();
+            
             var success = await LoadGltfBinaryBuffer(bytes, uri);
             if (success) await LoadContent();
 
-			if(importSettings.LoadTextures)
+			if(importSettings != null && importSettings.LoadTextures)
                 success = success && await Prepare();
             else
             {
@@ -610,10 +616,16 @@ namespace GLTFast
             )
         {
             m_Settings = importSettings ?? new ImportSettings();
+
+            if (uri != null)
+            {
+                m_Path = uri.AbsolutePath;
+            }
+            
             var success = await LoadGltf(json, uri);
             if (success) await LoadContent();
 
-			if(importSettings.LoadTextures)
+			if(importSettings != null && importSettings.LoadTextures)
                 success = success && await Prepare();
             else
             {
@@ -811,6 +823,12 @@ namespace GLTFast
         /// </summary>
         public int TextureCount => m_Textures?.Length ?? 0;
 
+        public string Path => m_Path ?? "";
+        
+        public int SourceImagesCount => Root?.Images?.Count ?? 0;
+        
+        public int SourceTexturesCount => Root?.Textures?.Count ?? 0;
+
         /// <summary>
         /// Default scene index
         /// </summary>
@@ -820,6 +838,12 @@ namespace GLTFast
         /// Number of scenes
         /// </summary>
         public int SceneCount => Root?.Scenes?.Count ?? 0;
+
+        public bool IsGLTFBinary => m_GlbBinChunk.HasValue;
+        
+        public GlbBinChunk GlbBinChunk => (GlbBinChunk)(m_GlbBinChunk);
+        
+        public byte[][] Buffers => m_Buffers;
 
         /// <summary>
         /// Get a glTF's scene's name by its index
@@ -1398,7 +1422,7 @@ namespace GLTFast
         {
             var baseUri = UriHelper.GetBaseUri(url);
             var success = await ParseJsonAndLoadBuffers(json, baseUri);
-            if (success) await LoadImages(baseUri);
+            if (success && m_Settings.LoadTextures) await LoadImages(baseUri);
             return success;
         }
 
@@ -1948,7 +1972,9 @@ namespace GLTFast
                 m_BinChunks[0] = m_GlbBinChunk.Value;
                 m_Buffers[0] = bytes;
             }
-            await LoadImages(baseUri);
+            
+            if(m_Settings.LoadTextures)
+                await LoadImages(baseUri);
             return true;
         }
 

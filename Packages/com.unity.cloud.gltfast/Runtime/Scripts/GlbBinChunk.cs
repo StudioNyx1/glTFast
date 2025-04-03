@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace GLTFast
 {
-    readonly struct GlbBinChunk
+    public readonly struct GlbBinChunk
     {
         public int Start { get; }
 

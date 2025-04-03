@@ -44,6 +44,21 @@ namespace GLTFast
         /// Number of textures
         /// </summary>
         int TextureCount { get; }
+        
+        /// <summary>
+        /// URL of the model
+        /// </summary>
+        string Path { get; }
+        
+        /// <summary>
+        /// Number of images in the loaded source
+        /// </summary>
+        int SourceImagesCount { get; }
+        
+        /// <summary>
+        /// Number of textures in the loaded source
+        /// </summary>
+        int SourceTexturesCount { get; }
 
         /// <summary>
         /// Get a Unity Material by its glTF material index
